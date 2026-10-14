@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.dirname(fileURLToPath(import.meta.url))
 const source = path.join(root, './shared/core-ts/src')
 const target = path.join(root, 'nodes/Modelflare/core')
-const files = ['attribution.ts', 'classify.ts', 'config.ts', 'errors.ts', 'messages.ts', 'signup.ts']
+const files = ['attribution.ts', 'classify.ts', 'config.ts', 'errors.ts', 'messages.ts', 'messages-en.ts', 'signup.ts']
 
 await rm(target, { recursive: true, force: true })
 await mkdir(target, { recursive: true })
