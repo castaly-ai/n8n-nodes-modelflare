@@ -18,9 +18,10 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # Trusted publishing (OIDC) needs npm 11.5 or later and an existing
-      # package. The first release uses the NPM_TOKEN secret; once the trusted
-      # publisher is configured on npmjs.com, delete that secret.
+      # Releases authenticate with the NPM_TOKEN secret, a granular token that
+      # bypasses 2FA and expires on 2027-01-12. If a trusted publisher is
+      # configured on npmjs.com later, npm uses OIDC instead and the secret
+      # can be deleted.
       - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run build
