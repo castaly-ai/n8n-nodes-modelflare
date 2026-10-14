@@ -1,0 +1,47 @@
+{
+  "name": "n8n-nodes-modelflare",
+  "version": "0.1.0",
+  "description": "Modelflare node for n8n: chat, image and video generation with one Smart API Key for every model available to your account.",
+  "license": "MIT",
+  "author": {
+    "name": "Havenbyte LLC"
+  },
+  "homepage": "https://modelflare.dev/sign-up?utm_source=n8n&utm_medium=plugin&utm_campaign=integrations",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/castaly-ai/n8n-nodes-modelflare.git"
+  },
+  "keywords": [
+    "n8n-community-node-package",
+    "modelflare",
+    "ai",
+    "llm",
+    "image generation",
+    "video generation"
+  ],
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "node prepare.mjs && tsc -p tsconfig.json && node copy-assets.mjs",
+    "typecheck": "node prepare.mjs && tsc -p tsconfig.json --noEmit"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "strict": true,
+    "credentials": [
+      "dist/credentials/ModelflareApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/Modelflare/Modelflare.node.js"
+    ]
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.1",
+    "n8n-workflow": "2.16.0",
+    "typescript": "6.0.3"
+  }
+}
