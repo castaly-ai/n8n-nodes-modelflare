@@ -31,7 +31,7 @@ Create a **Modelflare API** credential with your Smart API Key and the base URL:
 | Video | Generate | Creates a video task, waits up to the configured time and returns the video as binary data, or the task ID if it is still running. |
 | Video | Get Status / Download | Checks a task, or downloads a finished video. |
 
-The model lists come from your key's `GET /v1/models?scope=authorized`, so new models appear without editing the key. Model-specific fields go in **Parameters (JSON)** or **Request (JSON)** and are sent unchanged; each model's fields are on its page at https://docs.modelflare.dev/models/. Calls are billed to your Modelflare balance by actual usage.
+The model lists come from your key's `GET /v1/models?scope=authorized`, so new models appear without editing the key. Use the typed **Additional Options** collections for supported text, image, and video controls; each model's exact contract is documented at https://docs.modelflare.dev/models/. Calls are billed to your Modelflare balance by actual usage.
 
 ## Troubleshooting / 常见问题
 

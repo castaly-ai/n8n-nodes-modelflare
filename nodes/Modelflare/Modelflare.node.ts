@@ -99,19 +99,69 @@ async function explain(context: IExecuteFunctions, error: unknown, modelId?: str
   return describeError(gatewayError, { locale: 'en', utmSource: UTM_SOURCE, ...(modelListed !== undefined ? { modelListed } : {}) })
 }
 
-function jsonParameter(context: IExecuteFunctions, name: string, index: number): IDataObject {
+function collectionParameter(context: IExecuteFunctions, name: string, index: number): IDataObject {
   const value = context.getNodeParameter(name, index, {}) as unknown
-  if (typeof value === 'string') {
-    if (value.trim() === '') return {}
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as IDataObject) : {}
+}
+
+// 0.1.2 exposed open JSON fields. They stay readable so saved workflows keep
+// their model-specific parameters, while 0.1.3 only offers typed controls for
+// new configurations.
+function legacyObjectParameter(context: IExecuteFunctions, name: 'parameters' | 'request', index: number): IDataObject {
+  const value = context.getNodeParameter(name, index, {}) as unknown
+  if (typeof value === 'string' && value.trim()) {
     try {
       const parsed = JSON.parse(value) as unknown
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as IDataObject
     } catch {
-      // Reported below.
+      throw new NodeOperationError(context.getNode(), `The saved ${name} value must be a JSON object`, { itemIndex: index })
     }
-    throw new NodeOperationError(context.getNode(), `${name} must be a JSON object`, { itemIndex: index })
   }
-  return value && typeof value === 'object' ? (value as IDataObject) : {}
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as IDataObject) : {}
+}
+
+function textParameters(context: IExecuteFunctions, index: number): IDataObject {
+  const options = collectionParameter(context, 'textOptions', index)
+  const result: IDataObject = { ...legacyObjectParameter(context, 'parameters', index) }
+  if (typeof options.temperature === 'number') result.temperature = options.temperature
+  if (typeof options.maxTokens === 'number') result.max_tokens = options.maxTokens
+  if (typeof options.topP === 'number') result.top_p = options.topP
+  if (typeof options.reasoningEffort === 'string' && options.reasoningEffort) result.reasoning_effort = options.reasoningEffort
+  if (options.responseFormat === 'json_object' || options.responseFormat === 'text') {
+    result.response_format = { type: options.responseFormat }
+  }
+  return result
+}
+
+function imageParameters(context: IExecuteFunctions, index: number): IDataObject {
+  const options = collectionParameter(context, 'imageOptions', index)
+  const result: IDataObject = { ...legacyObjectParameter(context, 'parameters', index) }
+  if (typeof options.size === 'string' && options.size) result.size = options.size
+  if (typeof options.quality === 'string' && options.quality) result.quality = options.quality
+  if (typeof options.numberOfImages === 'number') result.n = options.numberOfImages
+  if (typeof options.outputFormat === 'string' && options.outputFormat) result.output_format = options.outputFormat
+  if (typeof options.aspectRatio === 'string' && options.aspectRatio) result.aspect_ratio = options.aspectRatio
+  if (typeof options.seed === 'number') result.seed = options.seed
+  if (typeof options.negativePrompt === 'string' && options.negativePrompt) result.negative_prompt = options.negativePrompt
+  if (typeof options.referenceImageUrl === 'string' && options.referenceImageUrl) result.image_url = options.referenceImageUrl
+  return result
+}
+
+function videoParameters(context: IExecuteFunctions, index: number): IDataObject {
+  const options = collectionParameter(context, 'videoOptions', index)
+  const result: IDataObject = { ...legacyObjectParameter(context, 'request', index) }
+  delete result.model
+  if (typeof options.duration === 'number') result.duration = options.duration
+  if (typeof options.resolution === 'string' && options.resolution) result.resolution = options.resolution
+  if (typeof options.aspectRatio === 'string' && options.aspectRatio) result.aspect_ratio = options.aspectRatio
+  if (typeof options.mode === 'string' && options.mode) result.mode = options.mode
+  if (typeof options.imageUrl === 'string' && options.imageUrl) result.image_url = options.imageUrl
+  if (typeof options.lastFrameUrl === 'string' && options.lastFrameUrl) result.last_frame_url = options.lastFrameUrl
+  if (typeof options.inputVideoUrl === 'string' && options.inputVideoUrl) result.input_video_url = options.inputVideoUrl
+  if (typeof options.audio === 'boolean') result.audio = options.audio
+  if (typeof options.seed === 'number') result.seed = options.seed
+  if (typeof options.negativePrompt === 'string' && options.negativePrompt) result.negative_prompt = options.negativePrompt
+  return result
 }
 
 const modelProperty = (kind: ModelKind, resource: string): INodeTypeDescription['properties'][number] => ({
@@ -130,7 +180,10 @@ export class Modelflare implements INodeType {
   description: INodeTypeDescription = {
     displayName: 'Modelflare',
     name: 'modelflare',
-    icon: 'file:modelflare.svg',
+    icon: {
+      light: 'file:modelflare.svg',
+      dark: 'file:modelflare.dark.svg',
+    },
     group: ['transform'],
     version: 1,
     subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
@@ -194,7 +247,7 @@ export class Modelflare implements INodeType {
         typeOptions: { rows: 4 },
         default: '',
         required: true,
-        displayOptions: { show: { resource: ['text', 'image'] } },
+        displayOptions: { show: { resource: ['text', 'image', 'video'], operation: ['message', 'generate'] } },
       },
       {
         displayName: 'System Message',
@@ -219,26 +272,235 @@ export class Modelflare implements INodeType {
         type: 'boolean',
         default: false,
         description:
-          "Whether to use the OpenAI-compatible edits route. Native Gemini image models do not support this switch. Put source images in the parameters as documented.",
+          'Whether to use the OpenAI-compatible edits route. Native Gemini image models do not support this switch.',
         displayOptions: { show: { resource: ['image'] } },
       },
       {
-        displayName: 'Parameters (JSON)',
-        name: 'parameters',
-        type: 'json',
-        default: '{}',
-        description:
-          "Model-specific fields sent unchanged, for example temperature for text or size for images. Each model's fields are on its page at https://docs.modelflare.dev/models/.",
-        displayOptions: { show: { resource: ['text', 'image'] } },
+        displayName: 'Additional Options',
+        name: 'textOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: { show: { resource: ['text'] } },
+        options: [
+          {
+            displayName: 'Max Output Tokens',
+            name: 'maxTokens',
+            type: 'number',
+            typeOptions: { minValue: 1 },
+            default: 1024,
+            description: 'Maximum number of tokens to generate. The model-specific limit is published by Modelflare.',
+          },
+          {
+            displayName: 'Reasoning Effort',
+            name: 'reasoningEffort',
+            type: 'options',
+            options: [
+              { name: 'Extra High', value: 'xhigh' },
+              { name: 'High', value: 'high' },
+              { name: 'Low', value: 'low' },
+              { name: 'Maximum', value: 'max' },
+              { name: 'Medium', value: 'medium' },
+              { name: 'Minimal', value: 'minimal' },
+              { name: 'None', value: 'none' },
+            ],
+            default: 'medium',
+            description: 'Reasoning level when supported by the selected model',
+          },
+          {
+            displayName: 'Response Format',
+            name: 'responseFormat',
+            type: 'options',
+            options: [
+              { name: 'Text', value: 'text' },
+              { name: 'JSON Object', value: 'json_object' },
+            ],
+            default: 'text',
+            description: 'Requested response format when supported by the selected model',
+          },
+          {
+            displayName: 'Temperature',
+            name: 'temperature',
+            type: 'number',
+            typeOptions: { minValue: 0, maxValue: 2, numberPrecision: 2 },
+            default: 1,
+            description: 'Sampling temperature when supported by the selected model',
+          },
+          {
+            displayName: 'Top P',
+            name: 'topP',
+            type: 'number',
+            typeOptions: { minValue: 0, maxValue: 1, numberPrecision: 2 },
+            default: 1,
+            description: 'Nucleus sampling threshold when supported by the selected model',
+          },
+        ],
       },
       {
-        displayName: 'Request (JSON)',
-        name: 'request',
-        type: 'json',
-        default: '{\n  "prompt": ""\n}',
-        required: true,
-        description: "The request body from the model's page at https://docs.modelflare.dev/models/video/. The model field is set for you.",
+        displayName: 'Additional Options',
+        name: 'imageOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
+        displayOptions: { show: { resource: ['image'], operation: ['generate'] } },
+        options: [
+          {
+            displayName: 'Aspect Ratio',
+            name: 'aspectRatio',
+            type: 'string',
+            default: '',
+            placeholder: '16:9',
+            description: 'Aspect ratio when supported by the selected model',
+          },
+          {
+            displayName: 'Negative Prompt',
+            name: 'negativePrompt',
+            type: 'string',
+            typeOptions: { rows: 2 },
+            default: '',
+            description: 'Elements to avoid when supported by the selected model',
+          },
+          {
+            displayName: 'Number of Images',
+            name: 'numberOfImages',
+            type: 'number',
+            typeOptions: { minValue: 1, maxValue: 4 },
+            default: 1,
+          },
+          {
+            displayName: 'Output Format',
+            name: 'outputFormat',
+            type: 'options',
+            options: [
+              { name: 'PNG', value: 'png' },
+              { name: 'JPEG', value: 'jpeg' },
+              { name: 'WEBP', value: 'webp' },
+            ],
+            default: 'png',
+            description: 'Output image format when supported by the selected model',
+          },
+          {
+            displayName: 'Quality',
+            name: 'quality',
+            type: 'options',
+            options: [
+              { name: 'Auto', value: 'auto' },
+              { name: 'Low', value: 'low' },
+              { name: 'Medium', value: 'medium' },
+              { name: 'High', value: 'high' },
+            ],
+            default: 'auto',
+            description: 'Image quality when supported by the selected model',
+          },
+          {
+            displayName: 'Reference Image URL',
+            name: 'referenceImageUrl',
+            type: 'string',
+            default: '',
+            placeholder: 'https://example.com/reference.png',
+            description: 'Reference or source image URL when supported by the selected model',
+          },
+          {
+            displayName: 'Seed',
+            name: 'seed',
+            type: 'number',
+            default: 0,
+            description: 'Deterministic seed when supported by the selected model',
+          },
+          {
+            displayName: 'Size',
+            name: 'size',
+            type: 'string',
+            default: '',
+            placeholder: '1024x1024',
+            description: 'Output size when supported by the selected model',
+          },
+        ],
+      },
+      {
+        displayName: 'Additional Options',
+        name: 'videoOptions',
+        type: 'collection',
+        placeholder: 'Add Option',
+        default: {},
         displayOptions: { show: { resource: ['video'], operation: ['generate'] } },
+        options: [
+          {
+            displayName: 'Aspect Ratio',
+            name: 'aspectRatio',
+            type: 'string',
+            default: '',
+            placeholder: '16:9',
+          },
+          {
+            displayName: 'Duration (Seconds)',
+            name: 'duration',
+            type: 'number',
+            typeOptions: { minValue: -1, maxValue: 30 },
+            default: 5,
+            description: 'Video duration; some models use -1 to choose the duration automatically',
+          },
+          {
+            displayName: 'First Frame Image URL',
+            name: 'imageUrl',
+            type: 'string',
+            default: '',
+            placeholder: 'https://example.com/first-frame.png',
+          },
+          {
+            displayName: 'Generate Audio',
+            name: 'audio',
+            type: 'boolean',
+            default: false,
+            description: 'Whether to generate synchronized audio when supported',
+          },
+          {
+            displayName: 'Input Video URL',
+            name: 'inputVideoUrl',
+            type: 'string',
+            default: '',
+            placeholder: 'https://example.com/input.mp4',
+          },
+          {
+            displayName: 'Last Frame Image URL',
+            name: 'lastFrameUrl',
+            type: 'string',
+            default: '',
+            placeholder: 'https://example.com/last-frame.png',
+          },
+          {
+            displayName: 'Mode',
+            name: 'mode',
+            type: 'string',
+            default: '',
+            description: 'Model-specific generation mode',
+          },
+          {
+            displayName: 'Negative Prompt',
+            name: 'negativePrompt',
+            type: 'string',
+            typeOptions: { rows: 2 },
+            default: '',
+          },
+          {
+            displayName: 'Resolution',
+            name: 'resolution',
+            type: 'options',
+            options: [
+              { name: '480p', value: '480p' },
+              { name: '720p', value: '720p' },
+              { name: '1080p', value: '1080p' },
+              { name: '4K', value: '4k' },
+            ],
+            default: '720p',
+          },
+          {
+            displayName: 'Seed',
+            name: 'seed',
+            type: 'number',
+            default: 0,
+          },
+        ],
       },
       {
         displayName: 'Wait (Seconds)',
@@ -315,7 +577,11 @@ async function run(
     const model = (await classified(context)).models.find(
       (candidate) => candidate.id === modelId && candidate.kind === 'text' && candidate.endpoints.includes('openai'),
     )
-    if (!model) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
+    if (!model) {
+      throw new NodeOperationError(context.getNode(), `${String(modelId)} is not an authorized Chat Completions model`, {
+        itemIndex: index,
+      })
+    }
     const system = context.getNodeParameter('system', index, '') as string
     const prompt = context.getNodeParameter('prompt', index) as string
     const imageUrl = (context.getNodeParameter('imageUrl', index, '') as string).trim()
@@ -330,7 +596,7 @@ async function run(
       { role: 'user', content: userContent },
     ]
     const body = await api<IDataObject>(context, 'POST', 'chat/completions', {
-      body: { ...jsonParameter(context, 'parameters', index), model: model.id, messages },
+      body: { ...textParameters(context, index), model: model.id, messages },
     })
     const choice = (body.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]
     return [{ json: { content: choice?.message?.content ?? '', model: body.model, usage: body.usage, response: body }, pairedItem }]
@@ -341,9 +607,11 @@ async function run(
   if (resource === 'image') {
     const { models } = await classified(context)
     const model = models.find((candidate) => candidate.id === modelId && candidate.kind === 'image')
-    if (!model) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
+    if (!model) {
+      throw new NodeOperationError(context.getNode(), `${String(modelId)} is not an authorized image model`, { itemIndex: index })
+    }
     const prompt = context.getNodeParameter('prompt', index) as string
-    const parameters = jsonParameter(context, 'parameters', index)
+    const parameters = imageParameters(context, index)
     const edit = context.getNodeParameter('edit', index, false) as boolean
     if (edit && model.imageRoute !== 'images') {
       throw new NodeOperationError(context.getNode(), `${model.id} does not use the OpenAI-compatible image edits route`, {
@@ -376,7 +644,9 @@ async function run(
         }
       }
     }
-    if (files.length === 0) throw new ModelflareError({ kind: 'upstream', message: `${model.id} returned no image` })
+    if (files.length === 0) {
+      throw new NodeOperationError(context.getNode(), `${model.id} returned no image`, { itemIndex: index })
+    }
     return Promise.all(
       files.map(async (file, position) => ({
         json: { model: model.id },
@@ -410,12 +680,22 @@ async function run(
   }
 
   const videoModel = (await classified(context)).models.find((candidate) => candidate.id === modelId && candidate.kind === 'video')
-  if (!videoModel) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
+  if (!videoModel) {
+    throw new NodeOperationError(context.getNode(), `${String(modelId)} is not an authorized video model`, { itemIndex: index })
+  }
   const created = await api<IDataObject>(context, 'POST', 'videos', {
-    body: { ...jsonParameter(context, 'request', index), model: videoModel.id },
+    body: {
+      ...videoParameters(context, index),
+      model: videoModel.id,
+      prompt:
+        (context.getNodeParameter('prompt', index, '') as string) ||
+        String(legacyObjectParameter(context, 'request', index).prompt ?? ''),
+    },
   })
   const taskId = String(created.id ?? created.task_id ?? '')
-  if (!taskId) throw new ModelflareError({ kind: 'upstream', message: 'The video task response has no id' })
+  if (!taskId) {
+    throw new NodeOperationError(context.getNode(), 'The video task response has no id', { itemIndex: index })
+  }
   const deadline = Date.now() + Math.min(context.getNodeParameter('waitSeconds', index, 0) as number, MAX_WAIT_SECONDS) * 1000
   let task: IDataObject = created
   while (task.status !== 'completed' && task.status !== 'failed' && Date.now() < deadline) {

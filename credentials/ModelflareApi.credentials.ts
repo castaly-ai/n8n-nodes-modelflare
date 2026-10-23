@@ -5,7 +5,10 @@ export class ModelflareApi implements ICredentialType {
 
   displayName = 'Modelflare API'
 
-  icon: Icon = 'file:../nodes/Modelflare/modelflare.svg'
+  icon: Icon = {
+    light: 'file:../nodes/Modelflare/modelflare.svg',
+    dark: 'file:../nodes/Modelflare/modelflare.dark.svg',
+  }
 
   documentationUrl = 'https://docs.modelflare.dev/'
 
