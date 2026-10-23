@@ -14,7 +14,7 @@ import {
 } from 'n8n-workflow'
 
 import { ATTRIBUTION_HEADER, attributionValue } from './core/attribution.js'
-import { classifyModels, type CatalogEntry, type ClassifiedModel, type ModelKind, type ModelListEntry } from './core/classify.js'
+import { classifyModels, needsCatalog, type CatalogEntry, type ClassifiedModel, type ModelKind, type ModelListEntry } from './core/classify.js'
 import { CATALOG_URL, resolveBaseUrl } from './core/config.js'
 import { ModelflareError, errorFromResponse } from './core/errors.js'
 import { describeError } from './core/messages.js'
@@ -50,10 +50,11 @@ async function api<T>(
 }
 
 async function classified(context: Context): Promise<{ models: ClassifiedModel[]; listed: Set<string> }> {
-  const list = await api<{ data?: ModelListEntry[] }>(context, 'GET', 'models')
+  const list = await api<{ data?: ModelListEntry[] }>(context, 'GET', 'models?scope=authorized')
   const entries = Array.isArray(list.data) ? list.data : []
   let catalog: CatalogEntry[] | null = null
   try {
+    if (!needsCatalog(entries)) return { models: classifyModels(entries, null), listed: new Set(entries.map((entry) => entry.id)) }
     const body = (await context.helpers.httpRequest({ method: 'GET', url: CATALOG_URL, json: true })) as { data?: CatalogEntry[] }
     catalog = Array.isArray(body.data) ? body.data : null
   } catch {
@@ -64,7 +65,9 @@ async function classified(context: Context): Promise<{ models: ClassifiedModel[]
 
 async function optionsOf(context: ILoadOptionsFunctions, kind: ModelKind): Promise<INodePropertyOptions[]> {
   const { models } = await classified(context)
-  return models.filter((model) => model.kind === kind).map((model) => ({ name: model.id, value: model.id }))
+  return models
+    .filter((model) => model.kind === kind && (kind !== 'text' || model.endpoints.includes('openai')))
+    .map((model) => ({ name: model.id, value: model.id }))
 }
 
 /**
@@ -202,11 +205,21 @@ export class Modelflare implements INodeType {
         displayOptions: { show: { resource: ['text'] } },
       },
       {
+        displayName: 'Image URL',
+        name: 'imageUrl',
+        type: 'string',
+        default: '',
+        placeholder: 'https://example.com/image.png',
+        description: 'Optional image input for a vision-capable text model. HTTPS and data URLs are supported by the gateway.',
+        displayOptions: { show: { resource: ['text'] } },
+      },
+      {
         displayName: 'Edit Mode',
         name: 'edit',
         type: 'boolean',
         default: false,
-        description: "Whether to use the edits route. Put the source images in the parameters as the model's docs page describes.",
+        description:
+          "Whether to use the OpenAI-compatible edits route. Native Gemini image models do not support this switch. Put source images in the parameters as documented.",
         displayOptions: { show: { resource: ['image'] } },
       },
       {
@@ -299,13 +312,25 @@ async function run(
 ): Promise<INodeExecutionData[]> {
   const pairedItem = { item: index }
   if (resource === 'text') {
+    const model = (await classified(context)).models.find(
+      (candidate) => candidate.id === modelId && candidate.kind === 'text' && candidate.endpoints.includes('openai'),
+    )
+    if (!model) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
     const system = context.getNodeParameter('system', index, '') as string
+    const prompt = context.getNodeParameter('prompt', index) as string
+    const imageUrl = (context.getNodeParameter('imageUrl', index, '') as string).trim()
+    const userContent = imageUrl
+      ? [
+          { type: 'text', text: prompt },
+          { type: 'image_url', image_url: { url: imageUrl } },
+        ]
+      : prompt
     const messages = [
       ...(system ? [{ role: 'system', content: system }] : []),
-      { role: 'user', content: context.getNodeParameter('prompt', index) as string },
+      { role: 'user', content: userContent },
     ]
     const body = await api<IDataObject>(context, 'POST', 'chat/completions', {
-      body: { ...jsonParameter(context, 'parameters', index), model: modelId, messages },
+      body: { ...jsonParameter(context, 'parameters', index), model: model.id, messages },
     })
     const choice = (body.choices as Array<{ message?: { content?: string } }> | undefined)?.[0]
     return [{ json: { content: choice?.message?.content ?? '', model: body.model, usage: body.usage, response: body }, pairedItem }]
@@ -319,6 +344,12 @@ async function run(
     if (!model) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
     const prompt = context.getNodeParameter('prompt', index) as string
     const parameters = jsonParameter(context, 'parameters', index)
+    const edit = context.getNodeParameter('edit', index, false) as boolean
+    if (edit && model.imageRoute !== 'images') {
+      throw new NodeOperationError(context.getNode(), `${model.id} does not use the OpenAI-compatible image edits route`, {
+        itemIndex: index,
+      })
+    }
     const files: Array<{ data: Buffer; mimeType: string }> = []
     if (model.imageRoute === 'gemini-generate-content') {
       const { contents, ...rest } = parameters
@@ -332,7 +363,6 @@ async function run(
         if (part.inlineData?.data) files.push({ data: Buffer.from(part.inlineData.data, 'base64'), mimeType: part.inlineData.mimeType ?? 'image/png' })
       }
     } else {
-      const edit = context.getNodeParameter('edit', index, false) as boolean
       const body = await api<{ data?: Array<{ b64_json?: string; url?: string }> }>(context, 'POST', edit ? 'images/edits' : 'images/generations', {
         body: { ...parameters, model: model.id, prompt },
       })
@@ -379,8 +409,10 @@ async function run(
     return [await download(context.getNodeParameter('taskId', index) as string)]
   }
 
+  const videoModel = (await classified(context)).models.find((candidate) => candidate.id === modelId && candidate.kind === 'video')
+  if (!videoModel) throw new ModelflareError({ kind: 'model_not_found', message: String(modelId) })
   const created = await api<IDataObject>(context, 'POST', 'videos', {
-    body: { ...jsonParameter(context, 'request', index), model: modelId },
+    body: { ...jsonParameter(context, 'request', index), model: videoModel.id },
   })
   const taskId = String(created.id ?? created.task_id ?? '')
   if (!taskId) throw new ModelflareError({ kind: 'upstream', message: 'The video task response has no id' })
@@ -395,5 +427,5 @@ async function run(
     throw new NodeOperationError(context.getNode(), `Video task ${taskId} failed: ${reason}`, { itemIndex: index })
   }
   if (task.status !== 'completed') return [{ json: { task_id: taskId, status: task.status ?? 'queued' }, pairedItem }]
-  return [await download(taskId, modelId)]
+  return [await download(taskId, videoModel.id)]
 }

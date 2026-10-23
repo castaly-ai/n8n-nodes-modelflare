@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-modelflare",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Modelflare node for n8n: chat, image and video generation with one Smart API Key for every model available to your account.",
   "license": "MIT",
   "author": {
